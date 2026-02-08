@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swarmflight"
-version = "0.1.0"
+version = "0.2.0"
 description = "Parallel agent swarm runtime for coding and research workflows."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,7 +16,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0.0"
+  "pytest>=8.0.0",
+  "ruff>=0.9.0"
 ]
 
 [project.scripts]
@@ -30,3 +31,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
