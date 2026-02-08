@@ -5,8 +5,11 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from swarmflight.runtime.actions import Observation
 from swarmflight.runtime.mailbox import Mailbox
 from swarmflight.runtime.models import Message, Task, TaskResult, TaskStatus
+from swarmflight.runtime.policy import HeuristicPolicy, Policy
+from swarmflight.runtime.trace import TraceRecorder
 from swarmflight.runtime.worker import Worker
 
 
@@ -18,8 +21,15 @@ class SchedulerState:
 class Orchestrator:
     """Simple in-memory orchestrator with round-robin worker selection."""
 
-    def __init__(self, mailbox: Mailbox | None = None) -> None:
+    def __init__(
+        self,
+        mailbox: Mailbox | None = None,
+        policy: Policy | None = None,
+        trace_recorder: TraceRecorder | None = None,
+    ) -> None:
         self.mailbox = mailbox or Mailbox()
+        self.policy = policy or HeuristicPolicy()
+        self.trace = trace_recorder
         self._workers: dict[str, Worker] = {}
         self._tasks: dict[str, Task] = {}
         self._ready_queue: deque[str] = deque()
@@ -34,6 +44,7 @@ class Orchestrator:
         if worker.worker_id in self._workers:
             raise ValueError(f"worker already registered: {worker.worker_id}")
         self._workers[worker.worker_id] = worker
+        self._record("worker_registered", worker_id=worker.worker_id)
 
     def submit_task(
         self,
@@ -90,10 +101,18 @@ class Orchestrator:
                 },
             )
         )
+        self._record(
+            "task_submitted",
+            task_id=task.task_id,
+            dependency_count=len(task.dependencies),
+            max_retries=task.max_retries,
+        )
         return task
 
     def run_next(self) -> TaskResult | None:
         self._refresh_blocked_tasks()
+        action = self.policy.choose(self.observation())
+        self._record("policy_action", action=action.action_type.value, payload=action.payload)
         if not self._ready_queue:
             return None
         task_id = self._ready_queue.popleft()
@@ -130,6 +149,13 @@ class Orchestrator:
         result = worker.run(task)
         result.attempt = task.attempts
         self._attempt_history[task_id].append(result)
+        self._record(
+            "task_attempt",
+            task_id=task_id,
+            worker_id=result.worker_id,
+            attempt=result.attempt,
+            ok=result.ok,
+        )
 
         if result.ok:
             task.status = TaskStatus.COMPLETED
@@ -160,6 +186,12 @@ class Orchestrator:
                     },
                 )
             )
+            self._record(
+                "task_retrying",
+                task_id=task_id,
+                attempt=task.attempts,
+                max_retries=task.max_retries,
+            )
             return result
 
         task.status = TaskStatus.FAILED
@@ -174,6 +206,22 @@ class Orchestrator:
         )
         self._resolve_dependents(task_id)
         return result
+
+    def observation(self) -> Observation:
+        tasks = self._tasks.values()
+        running = sum(task.status is TaskStatus.RUNNING for task in tasks)
+        completed = sum(task.status is TaskStatus.COMPLETED for task in tasks)
+        failed = sum(task.status is TaskStatus.FAILED for task in tasks)
+        skipped = sum(task.status is TaskStatus.SKIPPED for task in tasks)
+        return Observation(
+            ready_tasks=len(self._ready_queue),
+            blocked_tasks=len(self._blocked),
+            running_tasks=running,
+            completed_tasks=completed,
+            failed_tasks=failed,
+            skipped_tasks=skipped,
+            workers=len(self._workers),
+        )
 
     def get_task(self, task_id: str) -> Task:
         return self._tasks[task_id]
@@ -285,3 +333,8 @@ class Orchestrator:
             if dependency.status in (TaskStatus.FAILED, TaskStatus.SKIPPED):
                 return dependency_id
         raise RuntimeError("no failed dependency")
+
+    def _record(self, kind: str, task_id: str | None = None, **data: Any) -> None:
+        if self.trace is None:
+            return
+        self.trace.record(kind=kind, task_id=task_id, **data)

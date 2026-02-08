@@ -13,7 +13,7 @@ It is inspired by recent Agent Swarm ideas and focuses on practical engineering:
 
 Early but usable.
 
-Current baseline includes runtime v0.2 primitives:
+Current baseline includes runtime v0.3 primitives:
 
 - dependency-aware task graph execution
 - retry policy per task
@@ -33,7 +33,10 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
 swarmflight --help
-swarmflight bench --width 8 --swarm-workers 4 --max-retries 1
+swarmflight bench --width 8 --swarm-workers 4 --max-retries 1 --trace-dir ./.artifacts/traces
+swarmflight bench --scenario mixed --width 8 --swarm-workers 4 --max-retries 1
+swarmflight replay ./.artifacts/traces/swarm.jsonl
+swarmflight tune --scenario mixed --widths 4,8,12 --episodes 12 --worker-arms 1,2,4,6
 ruff check .
 pytest
 ```
@@ -50,8 +53,15 @@ Current runtime package (`src/swarmflight/runtime/`) includes:
 Benchmark package (`src/swarmflight/benchmarks/`) includes:
 
 - synthetic wide-search scenario generator
+- synthetic deep-search and mixed-search scenarios
 - mode comparison for single-agent vs swarm
 - metrics: pass rate, retries, token cost, critical steps, wall time
+- contextual epsilon-greedy tuning for swarm parallelism
+
+Design and metrics docs:
+
+- `docs/k2_5_swarm_reproduction_design.md`
+- `docs/metrics.md`
 
 This is a minimal baseline for iterative scheduler and benchmark work.
 

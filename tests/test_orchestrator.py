@@ -1,6 +1,6 @@
 import pytest
 
-from swarmflight.runtime import FunctionWorker, Orchestrator, TaskStatus
+from swarmflight.runtime import FunctionWorker, Orchestrator, TaskStatus, TraceRecorder
 
 
 def test_orchestrator_runs_tasks_round_robin():
@@ -93,3 +93,19 @@ def test_orchestrator_retries_then_completes():
     assert final_result is not None
     assert final_result.ok is True
     assert final_result.attempt == 2
+
+
+def test_orchestrator_emits_trace_events():
+    trace = TraceRecorder()
+    orchestrator = Orchestrator(trace_recorder=trace)
+    orchestrator.register_worker(FunctionWorker("worker-a", lambda _: {"ok": True}))
+    task = orchestrator.submit_task("tracked task")
+
+    orchestrator.run_all()
+
+    kinds = [event.kind for event in trace.events]
+    assert "worker_registered" in kinds
+    assert "task_submitted" in kinds
+    assert "policy_action" in kinds
+    assert "task_attempt" in kinds
+    assert orchestrator.get_task(task.task_id).status is TaskStatus.COMPLETED
