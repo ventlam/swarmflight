@@ -75,6 +75,10 @@ class Orchestrator:
         self._attempt_history: dict[str, list[TaskResult]] = defaultdict(list)
         self._result_order: list[str] = []
         self._scheduler = SchedulerState()
+        self._tick_count = 0
+        self._active_tick_count = 0
+        self._scheduled_attempt_count = 0
+        self._max_parallelism = 0
 
     def register_worker(self, worker: Worker) -> None:
         if worker.worker_id in self._workers:
@@ -173,6 +177,7 @@ class Orchestrator:
         self._refresh_blocked_tasks()
         action = self.policy.choose(self.observation())
         self._record("policy_action", action=action.action_type.value, payload=action.payload)
+        self._tick_count += 1
 
         if not self._ready_queue:
             return []
@@ -223,6 +228,11 @@ class Orchestrator:
                     reason="no_available_worker_or_concurrency",
                 )
             return []
+
+        self._active_tick_count += 1
+        self._scheduled_attempt_count += len(scheduled)
+        self._max_parallelism = max(self._max_parallelism, len(scheduled))
+        self._record("tick_completed", scheduled_tasks=len(scheduled))
 
         attempt_results: list[TaskResult] = []
 
@@ -376,6 +386,20 @@ class Orchestrator:
     def list_results(self) -> list[TaskResult]:
         return [self._results[task_id] for task_id in self._result_order]
 
+    def tick_count(self) -> int:
+        return self._tick_count
+
+    def active_tick_count(self) -> int:
+        return self._active_tick_count
+
+    def max_parallelism(self) -> int:
+        return self._max_parallelism
+
+    def average_parallelism(self) -> float:
+        if self._active_tick_count == 0:
+            return 0.0
+        return self._scheduled_attempt_count / self._active_tick_count
+
     def create_checkpoint(self, metadata: dict[str, Any] | None = None) -> RunCheckpoint:
         return RunCheckpoint(
             run_id=self.run_id,
@@ -393,6 +417,10 @@ class Orchestrator:
                 task_id: [serialize_result(result) for result in results]
                 for task_id, results in self._attempt_history.items()
             },
+            tick_count=self._tick_count,
+            active_tick_count=self._active_tick_count,
+            scheduled_attempt_count=self._scheduled_attempt_count,
+            max_parallelism=self._max_parallelism,
             metadata=dict(metadata or {}),
         )
 
@@ -440,6 +468,10 @@ class Orchestrator:
         self._running = set(checkpoint.running)
         self._result_order = list(checkpoint.result_order)
         self._scheduler.cursor = checkpoint.scheduler_cursor
+        self._tick_count = checkpoint.tick_count
+        self._active_tick_count = checkpoint.active_tick_count
+        self._scheduled_attempt_count = checkpoint.scheduled_attempt_count
+        self._max_parallelism = checkpoint.max_parallelism
 
         self._dependents = defaultdict(set)
         for task in self._tasks.values():

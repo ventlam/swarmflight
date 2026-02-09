@@ -62,7 +62,7 @@ Benchmark package (`src/swarmflight/benchmarks/`) includes:
 - synthetic wide-search scenario generator
 - synthetic deep-search and mixed-search scenarios
 - mode comparison for single-agent vs swarm
-- metrics: pass rate, retries, token cost, critical steps, wall time
+- metrics: pass rate, retries, stale count, avg parallelism, token cost, critical steps, wall time
 - contextual epsilon-greedy tuning for swarm parallelism
 
 Design and metrics docs:

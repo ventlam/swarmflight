@@ -28,6 +28,7 @@ class BenchmarkModeMetrics:
     critical_steps: int
     wall_time_ms: float
     stale_count: int = 0
+    avg_parallelism: float = 0.0
 
 
 @dataclass(slots=True)

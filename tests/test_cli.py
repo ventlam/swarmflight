@@ -29,6 +29,7 @@ def test_bench_command_runs(capsys, tmp_path):
 
     assert code == 0
     assert "scenario=wide-search-synthetic" in captured.out
+    assert "avg_parallel" in captured.out
     assert "estimated_step_speedup=" in captured.out
     assert (tmp_path / "single.jsonl").exists()
     assert (tmp_path / "swarm.jsonl").exists()
@@ -106,3 +107,4 @@ def test_resume_command_runs_from_checkpoint(capsys, tmp_path):
     assert f"checkpoint={checkpoint_file}" in captured.out
     assert "mode=swarm" in captured.out
     assert "pass_rate=" in captured.out
+    assert "avg_parallelism=" in captured.out

@@ -21,6 +21,10 @@ class RunCheckpoint:
     tasks: dict[str, dict[str, Any]]
     results: dict[str, dict[str, Any]]
     attempt_history: dict[str, list[dict[str, Any]]]
+    tick_count: int = 0
+    active_tick_count: int = 0
+    scheduled_attempt_count: int = 0
+    max_parallelism: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -39,6 +43,10 @@ class RunCheckpointStore:
             "tasks": checkpoint.tasks,
             "results": checkpoint.results,
             "attempt_history": checkpoint.attempt_history,
+            "tick_count": checkpoint.tick_count,
+            "active_tick_count": checkpoint.active_tick_count,
+            "scheduled_attempt_count": checkpoint.scheduled_attempt_count,
+            "max_parallelism": checkpoint.max_parallelism,
             "metadata": checkpoint.metadata,
         }
         temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
@@ -68,6 +76,10 @@ class RunCheckpointStore:
                 str(task_id): [dict(item) for item in items]
                 for task_id, items in dict(payload.get("attempt_history", {})).items()
             },
+            tick_count=int(payload.get("tick_count", 0)),
+            active_tick_count=int(payload.get("active_tick_count", 0)),
+            scheduled_attempt_count=int(payload.get("scheduled_attempt_count", 0)),
+            max_parallelism=int(payload.get("max_parallelism", 0)),
             metadata=dict(payload.get("metadata", {})),
         )
 

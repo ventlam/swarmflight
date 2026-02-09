@@ -12,6 +12,7 @@ This document defines core metrics for comparing single-agent and swarm runs.
 
 - `critical_steps`: estimated critical-path duration under worker constraints.
 - `wall_time_ms`: measured wall-clock runtime for the whole benchmark mode.
+- `avg_parallelism`: average scheduled attempts per active scheduler tick.
 
 ## Cost
 

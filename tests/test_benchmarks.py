@@ -13,6 +13,8 @@ def test_synthetic_benchmark_reports_swarm_step_advantage():
     assert swarm.retry_count == 1
     assert single.pass_rate == 1.0
     assert swarm.pass_rate == 1.0
+    assert single.avg_parallelism == 1.0
+    assert swarm.avg_parallelism >= single.avg_parallelism
     assert swarm.critical_steps <= single.critical_steps
 
 

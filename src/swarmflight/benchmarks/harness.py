@@ -125,7 +125,10 @@ def format_tuning_report(result: TuningResult) -> str:
 def format_report(report: BenchmarkReport) -> str:
     lines = [
         f"scenario={report.scenario} width={report.width} max_retries={report.max_retries}",
-        "mode   workers  pass_rate  critical_steps  retries  stale  token_cost  wall_ms",
+        (
+            "mode   workers  pass_rate  critical_steps  retries  stale"
+            "  avg_parallel  token_cost  wall_ms"
+        ),
     ]
 
     for mode_name in ("single", "swarm"):
@@ -133,7 +136,8 @@ def format_report(report: BenchmarkReport) -> str:
         lines.append(
             f"{mode.mode:<6} {mode.worker_count:>7} {mode.pass_rate:>9.2%}"
             f" {mode.critical_steps:>15} {mode.retry_count:>8}"
-            f" {mode.stale_count:>6} {mode.token_cost:>11} {mode.wall_time_ms:>8.2f}"
+            f" {mode.stale_count:>6} {mode.avg_parallelism:>13.2f}"
+            f" {mode.token_cost:>11} {mode.wall_time_ms:>8.2f}"
         )
 
     single_steps = report.modes["single"].critical_steps
@@ -205,6 +209,7 @@ def _run_mode(
         worker_count=worker_count,
         tasks=orchestrator.list_tasks(),
         wall_time_ms=wall_time_ms,
+        avg_parallelism=orchestrator.average_parallelism(),
     )
 
 
@@ -251,6 +256,7 @@ def resume_synthetic_mode(
         worker_count=worker_count,
         tasks=orchestrator.list_tasks(),
         wall_time_ms=wall_time_ms,
+        avg_parallelism=orchestrator.average_parallelism(),
     )
 
 
@@ -264,7 +270,10 @@ def format_mode_resume_report(metrics: BenchmarkModeMetrics, checkpoint_file: st
                 f"completed={metrics.completed} failed={metrics.failed}"
                 f" skipped={metrics.skipped} stale={metrics.stale_count}"
             ),
-            f"retries={metrics.retry_count} critical_steps={metrics.critical_steps}",
+            (
+                f"retries={metrics.retry_count} critical_steps={metrics.critical_steps}"
+                f" avg_parallelism={metrics.avg_parallelism:.2f}"
+            ),
         ]
     )
 
@@ -275,6 +284,7 @@ def _collect_mode_metrics(
     worker_count: int,
     tasks: list[Task],
     wall_time_ms: float,
+    avg_parallelism: float,
 ) -> BenchmarkModeMetrics:
     completed = sum(task.status is TaskStatus.COMPLETED for task in tasks)
     failed = sum(task.status is TaskStatus.FAILED for task in tasks)
@@ -302,6 +312,7 @@ def _collect_mode_metrics(
         critical_steps=critical_steps,
         wall_time_ms=wall_time_ms,
         stale_count=stale_count,
+        avg_parallelism=avg_parallelism,
     )
 
 
