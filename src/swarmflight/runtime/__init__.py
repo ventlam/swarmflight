@@ -1,6 +1,8 @@
 """Core runtime interfaces for SwarmFlight."""
 
 from swarmflight.runtime.actions import Action, ActionType, Observation
+from swarmflight.runtime.checkpoint import RunCheckpoint, RunCheckpointStore
+from swarmflight.runtime.concurrency import ConcurrencyLimits, ConcurrencyManager, ConcurrencyToken
 from swarmflight.runtime.mailbox import Mailbox
 from swarmflight.runtime.models import Message, Task, TaskResult, TaskStatus
 from swarmflight.runtime.orchestrator import Orchestrator
@@ -11,6 +13,9 @@ from swarmflight.runtime.worker import FunctionWorker, Worker
 __all__ = [
     "Action",
     "ActionType",
+    "ConcurrencyLimits",
+    "ConcurrencyManager",
+    "ConcurrencyToken",
     "FunctionWorker",
     "HeuristicPolicy",
     "Mailbox",
@@ -18,6 +23,8 @@ __all__ = [
     "Observation",
     "Orchestrator",
     "Policy",
+    "RunCheckpoint",
+    "RunCheckpointStore",
     "Task",
     "TaskResult",
     "TaskStatus",

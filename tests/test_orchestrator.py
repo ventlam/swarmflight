@@ -1,6 +1,15 @@
+import threading
+import time
+
 import pytest
 
-from swarmflight.runtime import FunctionWorker, Orchestrator, TaskStatus, TraceRecorder
+from swarmflight.runtime import (
+    ConcurrencyLimits,
+    FunctionWorker,
+    Orchestrator,
+    TaskStatus,
+    TraceRecorder,
+)
 
 
 def test_orchestrator_runs_tasks_round_robin():
@@ -104,8 +113,72 @@ def test_orchestrator_emits_trace_events():
     orchestrator.run_all()
 
     kinds = [event.kind for event in trace.events]
+    assert all(event.run_id == orchestrator.run_id for event in trace.events)
     assert "worker_registered" in kinds
     assert "task_submitted" in kinds
     assert "policy_action" in kinds
     assert "task_attempt" in kinds
     assert orchestrator.get_task(task.task_id).status is TaskStatus.COMPLETED
+
+
+def test_orchestrator_run_tick_executes_ready_tasks_in_parallel():
+    counters = {"running": 0, "max_running": 0}
+    lock = threading.Lock()
+
+    def slow_handler(_):
+        with lock:
+            counters["running"] += 1
+            counters["max_running"] = max(counters["max_running"], counters["running"])
+        time.sleep(0.05)
+        with lock:
+            counters["running"] -= 1
+        return {"ok": True}
+
+    orchestrator = Orchestrator()
+    orchestrator.register_worker(FunctionWorker("worker-a", slow_handler))
+    orchestrator.register_worker(FunctionWorker("worker-b", slow_handler))
+    orchestrator.submit_task("parallel-1")
+    orchestrator.submit_task("parallel-2")
+
+    attempts = orchestrator.run_tick()
+
+    assert len(attempts) == 2
+    assert counters["max_running"] >= 2
+
+
+def test_orchestrator_respects_profile_concurrency_limit_per_tick():
+    orchestrator = Orchestrator(concurrency_limits=ConcurrencyLimits(task_profiles={"cpu": 1}))
+    orchestrator.register_worker(FunctionWorker("worker-a", lambda _: {"ok": True}, profile="cpu"))
+    orchestrator.register_worker(FunctionWorker("worker-b", lambda _: {"ok": True}, profile="cpu"))
+
+    first = orchestrator.submit_task("cpu-task-1", profile="cpu")
+    second = orchestrator.submit_task("cpu-task-2", profile="cpu")
+
+    first_tick = orchestrator.run_tick()
+
+    assert len(first_tick) == 1
+    first_task = orchestrator.get_task(first.task_id)
+    second_task = orchestrator.get_task(second.task_id)
+    assert first_task.status is TaskStatus.COMPLETED or second_task.status is TaskStatus.COMPLETED
+    assert first_task.status is TaskStatus.PENDING or second_task.status is TaskStatus.PENDING
+
+    second_tick = orchestrator.run_tick()
+    assert len(second_tick) == 1
+    assert orchestrator.get_task(first.task_id).status is TaskStatus.COMPLETED
+    assert orchestrator.get_task(second.task_id).status is TaskStatus.COMPLETED
+
+
+def test_orchestrator_marks_task_stale_after_queue_timeout():
+    orchestrator = Orchestrator()
+    orchestrator.register_worker(FunctionWorker("worker-a", lambda _: {"ok": True}))
+    task = orchestrator.submit_task("stale-task", stale_timeout_ms=1)
+
+    time.sleep(0.02)
+    orchestrator.run_tick()
+
+    final_task = orchestrator.get_task(task.task_id)
+    result = orchestrator.result_for(task.task_id)
+    assert final_task.status is TaskStatus.STALE
+    assert result is not None
+    assert result.error is not None
+    assert "stale timeout" in result.error

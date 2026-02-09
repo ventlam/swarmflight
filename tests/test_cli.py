@@ -72,3 +72,37 @@ def test_tune_command_runs(capsys):
     assert code == 0
     assert "scenario=mixed" in captured.out
     assert "recommended_workers" in captured.out
+
+
+def test_resume_command_runs_from_checkpoint(capsys, tmp_path):
+    checkpoint_file = tmp_path / "swarm.checkpoint.json"
+
+    bench_code = main(
+        [
+            "bench",
+            "--scenario",
+            "mixed",
+            "--width",
+            "4",
+            "--swarm-workers",
+            "2",
+            "--max-retries",
+            "1",
+            "--checkpoint-file",
+            str(checkpoint_file),
+            "--stop-after-ticks",
+            "1",
+        ]
+    )
+    _ = capsys.readouterr()
+
+    assert bench_code == 0
+    assert checkpoint_file.exists()
+
+    resume_code = main(["resume", str(checkpoint_file)])
+    captured = capsys.readouterr()
+
+    assert resume_code == 0
+    assert f"checkpoint={checkpoint_file}" in captured.out
+    assert "mode=swarm" in captured.out
+    assert "pass_rate=" in captured.out

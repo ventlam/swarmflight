@@ -5,10 +5,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 @dataclass(slots=True)
 class TraceEvent:
+    run_id: str
     timestamp: str
     kind: str
     task_id: str | None = None
@@ -16,11 +18,13 @@ class TraceEvent:
 
 
 class TraceRecorder:
-    def __init__(self) -> None:
+    def __init__(self, run_id: str | None = None) -> None:
+        self.run_id = run_id or uuid4().hex
         self._events: list[TraceEvent] = []
 
     def record(self, kind: str, task_id: str | None = None, **data: Any) -> None:
         event = TraceEvent(
+            run_id=self.run_id,
             timestamp=datetime.now(UTC).isoformat(),
             kind=kind,
             task_id=task_id,
@@ -47,6 +51,7 @@ def load_trace(path: str | Path) -> list[TraceEvent]:
         item = json.loads(line)
         events.append(
             TraceEvent(
+                run_id=item.get("run_id", ""),
                 timestamp=item.get("timestamp", ""),
                 kind=item.get("kind", ""),
                 task_id=item.get("task_id"),

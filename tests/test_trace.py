@@ -4,7 +4,7 @@ from swarmflight.runtime import TraceRecorder, load_trace, summarize_trace
 
 
 def test_trace_roundtrip(tmp_path: Path):
-    recorder = TraceRecorder()
+    recorder = TraceRecorder(run_id="run-test")
     recorder.record("task_submitted", task_id="t-1", dependency_count=0)
     recorder.record("task_finished", task_id="t-1", ok=True)
 
@@ -15,6 +15,8 @@ def test_trace_roundtrip(tmp_path: Path):
     summary = summarize_trace(events)
 
     assert len(events) == 2
+    assert events[0].run_id == "run-test"
+    assert events[1].run_id == "run-test"
     assert events[0].kind == "task_submitted"
     assert events[1].kind == "task_finished"
     assert summary["total"] == 2

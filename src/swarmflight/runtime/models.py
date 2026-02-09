@@ -12,6 +12,8 @@ class TaskStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+    STALE = "stale"
 
 
 @dataclass(slots=True)
@@ -20,6 +22,13 @@ class Task:
     description: str
     payload: dict[str, Any] = field(default_factory=dict)
     dependencies: tuple[str, ...] = ()
+    profile: str = "default"
+    provider: str | None = None
+    stale_timeout_ms: int | None = None
+    max_runtime_ms: int | None = None
+    queued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
     max_retries: int = 0
     attempts: int = 0
     worker_id: str | None = None

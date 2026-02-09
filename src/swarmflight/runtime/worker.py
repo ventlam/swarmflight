@@ -10,6 +10,7 @@ TaskHandler = Callable[[Task], dict[str, Any]]
 
 class Worker(Protocol):
     worker_id: str
+    profile: str
 
     def run(self, task: Task) -> TaskResult:
         """Execute a task and return a structured result."""
@@ -18,8 +19,9 @@ class Worker(Protocol):
 class FunctionWorker:
     """Worker adapter that wraps a Python callable."""
 
-    def __init__(self, worker_id: str, handler: TaskHandler) -> None:
+    def __init__(self, worker_id: str, handler: TaskHandler, profile: str = "default") -> None:
         self.worker_id = worker_id
+        self.profile = profile
         self._handler = handler
 
     def run(self, task: Task) -> TaskResult:

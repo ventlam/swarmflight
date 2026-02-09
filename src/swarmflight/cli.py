@@ -5,8 +5,10 @@ from pathlib import Path
 
 from swarmflight import __version__
 from swarmflight.benchmarks import (
+    format_mode_resume_report,
     format_report,
     format_tuning_report,
+    resume_synthetic_mode,
     run_synthetic_benchmark,
     tune_parallelism,
 )
@@ -55,9 +57,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional output directory for benchmark trace JSONL files.",
     )
+    bench.add_argument(
+        "--checkpoint-file",
+        default=None,
+        help="Optional checkpoint output path for swarm mode runtime state.",
+    )
+    bench.add_argument(
+        "--stop-after-ticks",
+        type=int,
+        default=None,
+        help="Optional early stop tick budget for swarm mode (use with --checkpoint-file).",
+    )
 
     replay = subparsers.add_parser("replay", help="Replay and summarize a JSONL trace.")
     replay.add_argument("trace_file", help="Path to trace JSONL file.")
+
+    resume = subparsers.add_parser("resume", help="Resume a run from checkpoint JSON.")
+    resume.add_argument("checkpoint_file", help="Path to checkpoint JSON file.")
+    resume.add_argument(
+        "--trace-file",
+        default=None,
+        help="Optional output trace file for resumed run events.",
+    )
 
     tune = subparsers.add_parser("tune", help="Tune swarm worker parallelism with a bandit policy.")
     tune.add_argument(
@@ -107,12 +128,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "bench":
+        if args.stop_after_ticks is not None and args.checkpoint_file is None:
+            raise ValueError("--stop-after-ticks requires --checkpoint-file")
         report = run_synthetic_benchmark(
             scenario=args.scenario,
             width=args.width,
             swarm_workers=args.swarm_workers,
             max_retries=args.max_retries,
             trace_dir=args.trace_dir,
+            checkpoint_file=args.checkpoint_file,
+            stop_after_ticks=args.stop_after_ticks,
         )
         print(format_report(report))
         return 0
@@ -125,6 +150,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"total={summary.pop('total', 0)}")
         for key in sorted(summary):
             print(f"{key}={summary[key]}")
+        return 0
+
+    if args.command == "resume":
+        metrics = resume_synthetic_mode(
+            checkpoint_file=args.checkpoint_file,
+            trace_file=args.trace_file,
+        )
+        print(format_mode_resume_report(metrics, checkpoint_file=args.checkpoint_file))
         return 0
 
     if args.command == "tune":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 
 from swarmflight.benchmarks.models import (
     BenchmarkModeMetrics,
@@ -11,7 +12,14 @@ from swarmflight.benchmarks.models import (
 )
 from swarmflight.benchmarks.policy import ContextualEpsilonGreedy
 from swarmflight.benchmarks.scenarios import build_scenario_specs
-from swarmflight.runtime import FunctionWorker, Orchestrator, Task, TaskStatus, TraceRecorder
+from swarmflight.runtime import (
+    FunctionWorker,
+    Orchestrator,
+    RunCheckpointStore,
+    Task,
+    TaskStatus,
+    TraceRecorder,
+)
 
 
 def run_synthetic_benchmark(
@@ -21,6 +29,8 @@ def run_synthetic_benchmark(
     swarm_workers: int = 4,
     max_retries: int = 1,
     trace_dir: str | Path | None = None,
+    checkpoint_file: str | Path | None = None,
+    stop_after_ticks: int | None = None,
 ) -> BenchmarkReport:
     if width < 1:
         raise ValueError("width must be >= 1")
@@ -28,6 +38,8 @@ def run_synthetic_benchmark(
         raise ValueError("swarm_workers must be >= 1")
     if max_retries < 0:
         raise ValueError("max_retries must be >= 0")
+    if stop_after_ticks is not None and stop_after_ticks < 1:
+        raise ValueError("stop_after_ticks must be >= 1")
 
     specs = build_scenario_specs(scenario=scenario, width=width)
     modes = {
@@ -37,6 +49,8 @@ def run_synthetic_benchmark(
             worker_count=1,
             max_retries=max_retries,
             trace_dir=trace_dir,
+            scenario=scenario,
+            width=width,
         ),
         "swarm": _run_mode(
             mode="swarm",
@@ -44,6 +58,10 @@ def run_synthetic_benchmark(
             worker_count=swarm_workers,
             max_retries=max_retries,
             trace_dir=trace_dir,
+            scenario=scenario,
+            width=width,
+            checkpoint_file=checkpoint_file,
+            stop_after_ticks=stop_after_ticks,
         ),
     }
 
@@ -107,7 +125,7 @@ def format_tuning_report(result: TuningResult) -> str:
 def format_report(report: BenchmarkReport) -> str:
     lines = [
         f"scenario={report.scenario} width={report.width} max_retries={report.max_retries}",
-        "mode   workers  pass_rate  critical_steps  retries  token_cost  wall_ms",
+        "mode   workers  pass_rate  critical_steps  retries  stale  token_cost  wall_ms",
     ]
 
     for mode_name in ("single", "swarm"):
@@ -115,7 +133,7 @@ def format_report(report: BenchmarkReport) -> str:
         lines.append(
             f"{mode.mode:<6} {mode.worker_count:>7} {mode.pass_rate:>9.2%}"
             f" {mode.critical_steps:>15} {mode.retry_count:>8}"
-            f" {mode.token_cost:>11} {mode.wall_time_ms:>8.2f}"
+            f" {mode.stale_count:>6} {mode.token_cost:>11} {mode.wall_time_ms:>8.2f}"
         )
 
     single_steps = report.modes["single"].critical_steps
@@ -132,9 +150,14 @@ def _run_mode(
     worker_count: int,
     max_retries: int,
     trace_dir: str | Path | None,
+    scenario: str,
+    width: int,
+    checkpoint_file: str | Path | None = None,
+    stop_after_ticks: int | None = None,
 ) -> BenchmarkModeMetrics:
-    trace_recorder = TraceRecorder() if trace_dir is not None else None
-    orchestrator = Orchestrator(trace_recorder=trace_recorder)
+    run_id = uuid4().hex
+    trace_recorder = TraceRecorder(run_id=run_id) if trace_dir is not None else None
+    orchestrator = Orchestrator(trace_recorder=trace_recorder, run_id=run_id)
 
     for index in range(worker_count):
         worker_id = f"{mode}-worker-{index + 1}"
@@ -154,7 +177,22 @@ def _run_mode(
         )
 
     start = perf_counter()
-    orchestrator.run_all()
+    checkpoint_metadata = {
+        "kind": "synthetic-benchmark-mode",
+        "scenario": scenario,
+        "width": width,
+        "mode": mode,
+        "worker_count": worker_count,
+        "max_retries": max_retries,
+    }
+    if checkpoint_file is not None and mode == "swarm":
+        orchestrator.run_until_idle(
+            checkpoint_path=checkpoint_file,
+            checkpoint_metadata=checkpoint_metadata,
+            max_ticks=stop_after_ticks,
+        )
+    else:
+        orchestrator.run_all()
     wall_time_ms = (perf_counter() - start) * 1000
 
     if trace_recorder is not None:
@@ -162,12 +200,88 @@ def _run_mode(
         output_dir = Path(trace_dir)
         trace_recorder.to_jsonl(output_dir / f"{mode}.jsonl")
 
-    tasks = orchestrator.list_tasks()
+    return _collect_mode_metrics(
+        mode=mode,
+        worker_count=worker_count,
+        tasks=orchestrator.list_tasks(),
+        wall_time_ms=wall_time_ms,
+    )
+
+
+def resume_synthetic_mode(
+    checkpoint_file: str | Path,
+    trace_file: str | Path | None = None,
+) -> BenchmarkModeMetrics:
+    checkpoint_path = Path(checkpoint_file)
+    store = RunCheckpointStore()
+    checkpoint = store.load(checkpoint_path)
+    metadata = checkpoint.metadata
+
+    if metadata.get("kind") != "synthetic-benchmark-mode":
+        raise ValueError("unsupported checkpoint kind")
+
+    mode = str(metadata.get("mode", "swarm"))
+    worker_count = int(metadata.get("worker_count", 1))
+
+    trace_recorder = TraceRecorder(run_id=checkpoint.run_id) if trace_file is not None else None
+    orchestrator = Orchestrator(trace_recorder=trace_recorder, run_id=checkpoint.run_id)
+
+    worker_ids = _worker_ids_from_checkpoint(checkpoint.tasks, mode=mode, worker_count=worker_count)
+    for worker_id in worker_ids:
+        orchestrator.register_worker(FunctionWorker(worker_id=worker_id, handler=_worker_handler))
+
+    orchestrator.load_checkpoint(checkpoint)
+
+    start = perf_counter()
+    orchestrator.run_all()
+    wall_time_ms = (perf_counter() - start) * 1000
+
+    orchestrator.save_checkpoint(
+        path=checkpoint_path,
+        metadata=dict(metadata),
+        store=store,
+    )
+
+    if trace_recorder is not None:
+        trace_path = Path(trace_file)
+        trace_recorder.to_jsonl(trace_path)
+
+    return _collect_mode_metrics(
+        mode=mode,
+        worker_count=worker_count,
+        tasks=orchestrator.list_tasks(),
+        wall_time_ms=wall_time_ms,
+    )
+
+
+def format_mode_resume_report(metrics: BenchmarkModeMetrics, checkpoint_file: str | Path) -> str:
+    return "\n".join(
+        [
+            f"checkpoint={checkpoint_file}",
+            f"mode={metrics.mode} workers={metrics.worker_count}",
+            f"pass_rate={metrics.pass_rate:.2%}",
+            (
+                f"completed={metrics.completed} failed={metrics.failed}"
+                f" skipped={metrics.skipped} stale={metrics.stale_count}"
+            ),
+            f"retries={metrics.retry_count} critical_steps={metrics.critical_steps}",
+        ]
+    )
+
+
+def _collect_mode_metrics(
+    *,
+    mode: str,
+    worker_count: int,
+    tasks: list[Task],
+    wall_time_ms: float,
+) -> BenchmarkModeMetrics:
     completed = sum(task.status is TaskStatus.COMPLETED for task in tasks)
     failed = sum(task.status is TaskStatus.FAILED for task in tasks)
     skipped = sum(task.status is TaskStatus.SKIPPED for task in tasks)
+    stale_count = sum(task.status is TaskStatus.STALE for task in tasks)
     total_attempts = sum(task.attempts for task in tasks)
-    terminal_count = completed + failed + skipped
+    terminal_count = completed + failed + skipped + stale_count
     retry_count = max(total_attempts - terminal_count, 0)
 
     token_cost = sum(int(task.payload.get("token_cost", 0)) * task.attempts for task in tasks)
@@ -187,7 +301,27 @@ def _run_mode(
         token_cost=token_cost,
         critical_steps=critical_steps,
         wall_time_ms=wall_time_ms,
+        stale_count=stale_count,
     )
+
+
+def _worker_ids_from_checkpoint(
+    task_snapshots: dict[str, dict[str, object]],
+    *,
+    mode: str,
+    worker_count: int,
+) -> list[str]:
+    worker_ids = sorted(
+        {
+            str(worker_id)
+            for task_snapshot in task_snapshots.values()
+            for worker_id in [task_snapshot.get("worker_id")]
+            if worker_id
+        }
+    )
+    if worker_ids:
+        return worker_ids
+    return [f"{mode}-worker-{index + 1}" for index in range(worker_count)]
 
 
 def _worker_handler(task: Task) -> dict[str, int | str]:
@@ -204,7 +338,11 @@ def _worker_handler(task: Task) -> dict[str, int | str]:
 
 
 def _estimate_critical_steps(tasks: list[Task], worker_count: int) -> int:
-    executed = [task for task in tasks if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)]
+    executed = [
+        task
+        for task in tasks
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STALE)
+    ]
     if not executed:
         return 0
 
@@ -248,4 +386,5 @@ def _reward(metrics: BenchmarkModeMetrics) -> float:
         - float(metrics.critical_steps)
         - (0.001 * metrics.token_cost)
         - (2.0 * metrics.retry_count)
+        - (5.0 * metrics.stale_count)
     )

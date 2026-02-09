@@ -27,6 +27,7 @@ class BenchmarkModeMetrics:
     token_cost: int
     critical_steps: int
     wall_time_ms: float
+    stale_count: int = 0
 
 
 @dataclass(slots=True)
