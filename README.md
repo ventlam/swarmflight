@@ -13,11 +13,14 @@ It is inspired by recent Agent Swarm ideas and focuses on practical engineering:
 
 Early but usable.
 
-Current baseline includes runtime v0.3 primitives:
+Current baseline includes runtime v0.6 primitives:
 
 - dependency-aware task graph execution
+- concurrent tick scheduling with profile-based concurrency limits
 - retry policy per task
+- hook system (retry backoff, output truncation, stability guard)
 - mailbox and worker abstraction
+- run checkpoint persistence and resume flow
 - synthetic single-agent vs swarm benchmark harness
 
 ## Roadmap
@@ -35,6 +38,8 @@ pip install -e .[dev]
 swarmflight --help
 swarmflight bench --width 8 --swarm-workers 4 --max-retries 1 --trace-dir ./.artifacts/traces
 swarmflight bench --scenario mixed --width 8 --swarm-workers 4 --max-retries 1
+swarmflight bench --scenario mixed --width 8 --swarm-workers 4 --max-retries 1 --checkpoint-file ./.artifacts/checkpoints/swarm.json --stop-after-ticks 2
+swarmflight resume ./.artifacts/checkpoints/swarm.json
 swarmflight replay ./.artifacts/traces/swarm.jsonl
 swarmflight tune --scenario mixed --widths 4,8,12 --episodes 12 --worker-arms 1,2,4,6
 ruff check .
@@ -45,7 +50,9 @@ pytest
 
 Current runtime package (`src/swarmflight/runtime/`) includes:
 
-- `orchestrator.py`: dependency-aware orchestrator, retries, and round-robin scheduling
+- `orchestrator.py`: dependency-aware orchestrator, concurrent ticks, retries, and checkpoint resume
+- `events.py`: runtime event bus and structured runtime events
+- `hooks.py`: hook manager and built-in hooks for backoff/truncation/stability suggestions
 - `worker.py`: worker protocol and function-based worker implementation
 - `mailbox.py`: in-memory mailbox for inter-agent messages
 - `models.py`: shared task/message/result data models

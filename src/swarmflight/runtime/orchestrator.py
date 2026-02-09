@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import sleep
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +19,8 @@ from swarmflight.runtime.checkpoint import (
     serialize_task,
 )
 from swarmflight.runtime.concurrency import ConcurrencyLimits, ConcurrencyManager, ConcurrencyToken
+from swarmflight.runtime.events import RuntimeEventBus
+from swarmflight.runtime.hooks import HookManager, default_runtime_hooks
 from swarmflight.runtime.mailbox import Mailbox
 from swarmflight.runtime.models import Message, Task, TaskResult, TaskStatus
 from swarmflight.runtime.policy import HeuristicPolicy, Policy
@@ -40,16 +43,27 @@ class Orchestrator:
         trace_recorder: TraceRecorder | None = None,
         concurrency_limits: ConcurrencyLimits | None = None,
         run_id: str | None = None,
+        event_bus: RuntimeEventBus | None = None,
+        hooks: list[object] | None = None,
     ) -> None:
         self.mailbox = mailbox or Mailbox()
         self.policy = policy or HeuristicPolicy()
         self.trace = trace_recorder
-        if self.trace is not None and run_id is None:
-            self.run_id = self.trace.run_id
-        else:
-            self.run_id = run_id or uuid4().hex
-            if self.trace is not None:
-                self.trace.run_id = self.run_id
+
+        resolved_run_id = run_id
+        if resolved_run_id is None and self.trace is not None:
+            resolved_run_id = self.trace.run_id
+        if resolved_run_id is None and event_bus is not None:
+            resolved_run_id = event_bus.run_id
+        self.run_id = resolved_run_id or uuid4().hex
+
+        if self.trace is not None:
+            self.trace.run_id = self.run_id
+
+        self.events = event_bus or RuntimeEventBus(run_id=self.run_id)
+        self.events.run_id = self.run_id
+        self.hooks = HookManager(default_runtime_hooks() if hooks is None else hooks)
+
         self.concurrency = ConcurrencyManager(concurrency_limits)
         self._workers: dict[str, Worker] = {}
         self._tasks: dict[str, Task] = {}
@@ -202,6 +216,12 @@ class Orchestrator:
 
         self._ready_queue.extend(deferred)
         if not scheduled:
+            if self._ready_queue:
+                self._record(
+                    "tick_stalled",
+                    ready_tasks=len(self._ready_queue),
+                    reason="no_available_worker_or_concurrency",
+                )
             return []
 
         attempt_results: list[TaskResult] = []
@@ -398,6 +418,7 @@ class Orchestrator:
         self.run_id = checkpoint.run_id
         if self.trace is not None:
             self.trace.run_id = self.run_id
+        self.events.run_id = self.run_id
 
         self._tasks = {
             task_id: deserialize_task(task_payload)
@@ -458,6 +479,8 @@ class Orchestrator:
         policy: Policy | None = None,
         trace_recorder: TraceRecorder | None = None,
         concurrency_limits: ConcurrencyLimits | None = None,
+        event_bus: RuntimeEventBus | None = None,
+        hooks: list[object] | None = None,
         store: RunCheckpointStore | None = None,
     ) -> Orchestrator:
         checkpoint_store = store or RunCheckpointStore()
@@ -468,6 +491,8 @@ class Orchestrator:
             trace_recorder=trace_recorder,
             concurrency_limits=concurrency_limits,
             run_id=checkpoint.run_id,
+            event_bus=event_bus,
+            hooks=hooks,
         )
         orchestrator.load_checkpoint(checkpoint)
         return orchestrator
@@ -508,6 +533,7 @@ class Orchestrator:
         return None
 
     def _begin_attempt(self, task: Task) -> None:
+        self.hooks.before_task_attempt(task=task, mailbox=self.mailbox)
         task.status = TaskStatus.RUNNING
         task.attempts += 1
         task.started_at = datetime.now(UTC)
@@ -536,6 +562,7 @@ class Orchestrator:
         self._running.discard(task_id)
         task.ended_at = datetime.now(UTC)
         self.concurrency.release(token)
+        result = self.hooks.after_task_attempt(task=task, result=result, mailbox=self.mailbox)
 
         self._attempt_history[task_id].append(result)
         self._record(
@@ -569,6 +596,13 @@ class Orchestrator:
                 )
             )
             self._record("task_stale", task_id=task_id, max_runtime_ms=task.max_runtime_ms)
+            self._record(
+                "task_terminal",
+                task_id=task_id,
+                status=TaskStatus.STALE.value,
+                ok=False,
+                attempt=stale_result.attempt,
+            )
             self._resolve_dependents(task_id)
             return stale_result
 
@@ -583,12 +617,28 @@ class Orchestrator:
                     content={"task_id": task_id, "ok": True},
                 )
             )
+            self._record(
+                "task_terminal",
+                task_id=task_id,
+                status=TaskStatus.COMPLETED.value,
+                ok=True,
+                attempt=result.attempt,
+            )
             self._resolve_dependents(task_id)
             return result
 
         if task.attempts <= task.max_retries:
             task.status = TaskStatus.PENDING
             task.queued_at = datetime.now(UTC)
+            backoff_ms = self.hooks.retry_delay_ms(task=task, result=result, mailbox=self.mailbox)
+            if backoff_ms > 0:
+                self._record(
+                    "task_retry_backoff",
+                    task_id=task_id,
+                    backoff_ms=backoff_ms,
+                    attempt=task.attempts,
+                )
+                sleep(backoff_ms / 1000)
             self._ready_queue.append(task_id)
             self.mailbox.send(
                 Message(
@@ -619,6 +669,13 @@ class Orchestrator:
                 kind="task_finished",
                 content={"task_id": task_id, "ok": False},
             )
+        )
+        self._record(
+            "task_terminal",
+            task_id=task_id,
+            status=TaskStatus.FAILED.value,
+            ok=False,
+            attempt=result.attempt,
         )
         self._resolve_dependents(task_id)
         return result
@@ -662,6 +719,13 @@ class Orchestrator:
             )
         )
         self._record("task_stale", task_id=task.task_id, reason=reason)
+        self._record(
+            "task_terminal",
+            task_id=task.task_id,
+            status=TaskStatus.STALE.value,
+            ok=False,
+            attempt=result.attempt,
+        )
         self._resolve_dependents(task.task_id)
 
     def _store_terminal_result(self, result: TaskResult) -> None:
@@ -732,6 +796,13 @@ class Orchestrator:
                 content={"task_id": task.task_id, "reason": reason},
             )
         )
+        self._record(
+            "task_terminal",
+            task_id=task.task_id,
+            status=TaskStatus.SKIPPED.value,
+            ok=False,
+            attempt=result.attempt,
+        )
         self._resolve_dependents(task.task_id)
 
     def _dependencies_completed(self, task: Task) -> bool:
@@ -766,6 +837,8 @@ class Orchestrator:
         raise RuntimeError("no failed dependency")
 
     def _record(self, kind: str, task_id: str | None = None, **data: Any) -> None:
+        event = self.events.publish(kind=kind, task_id=task_id, payload=data)
+        self.hooks.on_event(event=event, mailbox=self.mailbox)
         if self.trace is None:
             return
         self.trace.record(kind=kind, task_id=task_id, **data)
